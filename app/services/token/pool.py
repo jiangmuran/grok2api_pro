@@ -37,7 +37,11 @@ class TokenPool:
             return False
 
     def select(
-        self, exclude: set = None, prefer_tags: Optional[Set[str]] = None
+        self,
+        exclude: Optional[Set[str]] = None,
+        prefer_tags: Optional[Set[str]] = None,
+        required_tags: Optional[Set[str]] = None,
+        exclude_tags: Optional[Set[str]] = None,
     ) -> Optional[TokenInfo]:
         """
         选择一个可用 Token
@@ -55,6 +59,8 @@ class TokenPool:
         Args:
             exclude: 需要排除的 token 字符串集合
             prefer_tags: 优先选择包含这些 tag 的 token（若存在则仅在其子集中选择）
+            required_tags: 必须包含的 tag 集合
+            exclude_tags: 不允许包含的 tag 集合
         """
         consumed_mode = self._is_consumed_mode()
 
@@ -65,6 +71,8 @@ class TokenPool:
                 for t in self._tokens.values()
                 if t.is_available(consumed_mode=True)
                 and (not exclude or t.token not in exclude)
+                and (not required_tags or required_tags.issubset(set(t.tags or [])))
+                and (not exclude_tags or not set(t.tags or []).intersection(exclude_tags))
             ]
 
             if not available:
@@ -91,6 +99,8 @@ class TokenPool:
                 for t in self._tokens.values()
                 if t.is_available(consumed_mode=False)
                 and (not exclude or t.token not in exclude)
+                and (not required_tags or required_tags.issubset(set(t.tags or [])))
+                and (not exclude_tags or not set(t.tags or []).intersection(exclude_tags))
             ]
 
             if not available:
