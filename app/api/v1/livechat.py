@@ -1,46 +1,35 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.core.auth import (
-    clear_function_auth_cookie,
-    set_function_auth_cookie,
-    verify_function_key,
-)
 from app.core.exceptions import AppException
 from app.services.grok.services.voice import VoiceService
+from app.services.grok.utils.retry import pick_token
 from app.services.token.manager import get_token_manager
 
-router = APIRouter()
+router = APIRouter(tags=["LiveChat"])
 
 
-class VoiceTokenResponse(BaseModel):
+class LiveChatTokenResponse(BaseModel):
     token: str
     url: str
     participant_name: str = ""
     room_name: str = ""
 
 
-@router.get(
-    "/voice/token",
-    dependencies=[Depends(verify_function_key)],
-    response_model=VoiceTokenResponse,
-)
-async def function_voice_token(
+@router.get("/livechat/token", response_model=LiveChatTokenResponse)
+async def create_livechat_token(
     voice: str = "ara",
     personality: str = "assistant",
     speed: float = 1.0,
 ):
-    """获取 Grok Voice Mode (LiveKit) Token"""
+    """使用 API Key 换取 LiveChat 所需的 LiveKit token。"""
     token_mgr = await get_token_manager()
-    sso_token = None
-    for pool_name in ("ssoBasic", "ssoSuper"):
-        sso_token = token_mgr.get_token(pool_name)
-        if sso_token:
-            break
+    await token_mgr.reload_if_stale()
 
+    sso_token = await pick_token(token_mgr, "grok-3", set())
     if not sso_token:
         raise AppException(
-            "No available tokens for voice mode",
+            "No available tokens for livechat",
             code="no_token",
             status_code=503,
         )
@@ -56,37 +45,25 @@ async def function_voice_token(
         token = data.get("token")
         if not token:
             raise AppException(
-                "Upstream returned no voice token",
+                "Upstream returned no livechat token",
                 code="upstream_error",
                 status_code=502,
             )
 
-        return VoiceTokenResponse(
+        return LiveChatTokenResponse(
             token=token,
             url="wss://livekit.grok.com",
             participant_name=str(data.get("participantName") or ""),
             room_name=str(data.get("roomName") or ""),
         )
-
     except Exception as e:
         if isinstance(e, AppException):
             raise
         raise AppException(
-            f"Voice token error: {str(e)}",
-            code="voice_error",
+            f"Livechat token error: {str(e)}",
+            code="livechat_error",
             status_code=500,
         )
 
 
-@router.get("/verify", dependencies=[Depends(verify_function_key)])
-async def function_verify_api(response: Response):
-    """验证 Function Key"""
-    set_function_auth_cookie(response)
-    return {"status": "success"}
-
-
-@router.post("/logout")
-async def function_logout(response: Response):
-    """清理 Function 页面登录态"""
-    clear_function_auth_cookie(response)
-    return {"status": "success"}
+__all__ = ["router"]

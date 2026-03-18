@@ -206,6 +206,35 @@ curl http://localhost:8000/v1/chat/completions \
 
 <br>
 
+### `GET /v1/livechat/token`
+
+> 使用 API Key 换取 LiveChat 所需的 LiveKit token
+
+```bash
+curl http://localhost:8000/v1/livechat/token \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  "?voice=ara&personality=assistant&speed=1"
+```
+
+**Query 参数**
+
+| 字段 | 类型 | 说明 | 默认值 |
+| :-- | :-- | :-- | :-- |
+| `voice` | string | 语音角色 | `ara` |
+| `personality` | string | 角色性格 | `assistant` |
+| `speed` | number | 播放速度 | `1.0` |
+
+**响应示例**
+
+```json
+{
+  "token": "...",
+  "url": "wss://livekit.grok.com",
+  "participant_name": "",
+  "room_name": ""
+}
+```
+
 ### `POST /v1/responses`
 
 > OpenAI Responses API 兼容接口
@@ -394,9 +423,10 @@ curl http://localhost:8000/v1/videos \
 | :-- | :-- | :-- | :-- | :-- |
 | **app** | `app_url` | 应用地址 | 当前 Grok2API 服务的外部访问 URL，用于文件链接访问。 | `""` |
 |  | `app_key` | 后台密码 | 登录 Grok2API 管理后台的密码（必填）。 | `grok2api` |
-|  | `api_key` | API 密钥 | 调用 Grok2API 服务的 Token（可选，支持逗号分隔或数组）。 | `""` |
+|  | `api_key` | API 密钥 | 普通 API 密钥；命中后仅使用未带 `nsfw` 标签的号池（可选，支持逗号分隔或数组）。 | `""` |
+|  | `api_key_nsfw` | NSFW API 密钥 | NSFW 专用 API 密钥；命中后仅使用带 `nsfw` 标签的号池（可选，支持逗号分隔或数组）。 | `""` |
 |  | `function_enabled` | Function 开关 | 是否启用 function 功能玩法。 | `false` |
-|  | `function_key` | Function 密钥 | Function 调用密钥（可选）。 | `""` |
+|  | `function_key` | Function 密钥 | Function 页面与接口的访问密钥（可选）。 | `""` |
 |  | `image_format` | 图片格式 | 生成的图片格式（url 或 base64）。 | `url` |
 |  | `video_format` | 视频格式 | 生成的视频格式（html 或 url，url 为处理后的链接）。 | `html` |
 |  | `temporary` | 临时对话 | 是否启用临时对话模式。 | `true` |

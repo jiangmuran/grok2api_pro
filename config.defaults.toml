@@ -6,6 +6,8 @@ app_url = ""
 app_key = "grok2api"
 # API 调用密钥（可选，支持列表）
 api_key = ""
+# NSFW 专用 API 调用密钥（可选，支持列表）
+api_key_nsfw = ""
 # 是否启用 function 功能玩法
 function_enabled = false
 # function 调用密钥（可选）

@@ -217,8 +217,12 @@ function logout() {
 }
 
 function functionLogout() {
-  clearStoredFunctionKey();
-  window.location.href = '/login';
+  fetch('/v1/function/logout', { method: 'POST' })
+    .catch(() => null)
+    .finally(() => {
+      clearStoredFunctionKey();
+      window.location.href = '/login';
+    });
 }
 
 async function fetchStorageType() {

@@ -69,15 +69,27 @@ def build_tool_prompt(
 
     # Handle tool_choice directives
     if tool_choice == "required":
-        lines.append("IMPORTANT: You MUST call at least one tool in your response. Do not respond with only text.")
+        lines.append("=" * 60)
+        lines.append("CRITICAL REQUIREMENT: You MUST call at least one tool.")
+        lines.append("DO NOT just say you will call a tool - you MUST output the <tool_call> XML block.")
+        lines.append("Your response MUST contain at least one valid <tool_call>...</tool_call> block.")
+        lines.append("If you respond with only text and no <tool_call> blocks, your response will be REJECTED.")
+        lines.append("=" * 60)
     elif isinstance(tool_choice, dict):
         func_info = tool_choice.get("function", {})
         forced_name = func_info.get("name", "")
         if forced_name:
-            lines.append(f"IMPORTANT: You MUST call the tool \"{forced_name}\" in your response.")
+            lines.append("=" * 60)
+            lines.append(f"CRITICAL REQUIREMENT: You MUST call the tool \"{forced_name}\".")
+            lines.append("DO NOT just say you will call the tool - you MUST output the <tool_call> XML block.")
+            lines.append(f"Your response MUST contain a <tool_call> block with \"name\": \"{forced_name}\".")
+            lines.append("If you respond without the required <tool_call> block, your response will be REJECTED.")
+            lines.append("=" * 60)
     else:
         # "auto" or default
-        lines.append("Decide whether to call a tool based on the user's request. If you don't need a tool, respond normally with text only.")
+        lines.append("You may choose to call a tool if it helps answer the user's request, or respond with text only if tools are not needed.")
+        lines.append("")
+        lines.append("Note: If you decide to use a tool, you must output the actual <tool_call> XML block shown above. Simply describing what you would do is not sufficient - the tool will only execute if you output the proper XML format.")
 
     lines.append("")
     lines.append("When you call a tool, you may include text before or after the <tool_call> blocks, but the tool call blocks must be valid JSON.")

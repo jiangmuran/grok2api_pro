@@ -12,6 +12,7 @@ from typing import Any, AsyncGenerator, AsyncIterable, Dict, List, Optional, Uni
 
 import orjson
 
+from app.core.auth import current_api_key_allows_nsfw
 from app.core.config import get_config
 from app.core.logger import logger
 from app.core.storage import DATA_DIR
@@ -59,6 +60,8 @@ class ImageGenerationService:
         # resolve nsfw once for routing and upstream
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
+        if not current_api_key_allows_nsfw():
+            enable_nsfw = False
         prefer_tags = {"nsfw"} if enable_nsfw else None
 
         if stream:

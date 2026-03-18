@@ -205,6 +205,35 @@ curl http://localhost:8000/v1/chat/completions \
 
 <br>
 
+### `GET /v1/livechat/token`
+
+> Exchange API key for a LiveChat LiveKit token
+
+```bash
+curl http://localhost:8000/v1/livechat/token \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  "?voice=ara&personality=assistant&speed=1"
+```
+
+**Query params**
+
+| Field | Type | Description | Default |
+| :-- | :-- | :-- | :-- |
+| `voice` | string | Voice preset | `ara` |
+| `personality` | string | Persona | `assistant` |
+| `speed` | number | Playback speed | `1.0` |
+
+**Response example**
+
+```json
+{
+  "token": "...",
+  "url": "wss://livekit.grok.com",
+  "participant_name": "",
+  "room_name": ""
+}
+```
+
 ### `POST /v1/responses`
 
 > OpenAI Responses API compatible endpoint (subset)
@@ -393,9 +422,10 @@ Config file: `data/config.toml`
 | :-- | :-- | :-- | :-- | :-- |
 | **app** | `app_url` | App URL | External base URL used for file links. | `""` |
 |  | `app_key` | Admin password | Login password for admin panel. | `grok2api` |
-|  | `api_key` | API key | Optional API key for access (comma-separated string or array). | `""` |
+|  | `api_key` | API key | Standard API key; only uses tokens without the `nsfw` tag (optional, comma-separated string or array). | `""` |
+|  | `api_key_nsfw` | NSFW API key | NSFW-only API key; only uses tokens with the `nsfw` tag (optional, comma-separated string or array). | `""` |
 |  | `function_enabled` | Function mode | Enable function pages/features. | `false` |
-|  | `function_key` | Function key | Access key for function endpoints/pages (optional). | `""` |
+|  | `function_key` | Function key | Access key for function pages and endpoints (optional). | `""` |
 |  | `image_format` | Image format | `url` or `base64`. | `url` |
 |  | `video_format` | Video format | `html` or `url` (processed link). | `html` |
 |  | `temporary` | Temporary chat | Enable temporary chat mode. | `true` |

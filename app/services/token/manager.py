@@ -15,6 +15,7 @@ from app.services.token.models import (
     SUPER_DEFAULT_QUOTA,
 )
 from app.core.storage import get_storage, LocalStorage
+from app.core.auth import get_api_key_scope
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.token.pool import TokenPool
@@ -315,7 +316,19 @@ class TokenManager:
             return
         if self._save_task and not self._save_task.done():
             return
-        self._save_task = asyncio.create_task(self._flush_loop())
+            self._save_task = asyncio.create_task(self._flush_loop())
+
+    def _merge_tag_filters(
+        self,
+        required_tags: Optional[Set[str]] = None,
+        exclude_tags: Optional[Set[str]] = None,
+    ) -> tuple[Optional[Set[str]], Optional[Set[str]]]:
+        # 不再自动合并 API key scope 的标签过滤
+        # 只传递调用方明确指定的标签要求
+        return (
+            required_tags or None,
+            exclude_tags or None,
+        )
 
     async def _flush_loop(self):
         try:
@@ -330,7 +343,14 @@ class TokenManager:
             if self._dirty:
                 self._schedule_save()
 
-    def get_token(self, pool_name: str = "ssoBasic", exclude: set = None, prefer_tags: Optional[Set[str]] = None) -> Optional[str]:
+    def get_token(
+        self,
+        pool_name: str = "ssoBasic",
+        exclude: Optional[Set[str]] = None,
+        prefer_tags: Optional[Set[str]] = None,
+        required_tags: Optional[Set[str]] = None,
+        exclude_tags: Optional[Set[str]] = None,
+    ) -> Optional[str]:
         """
         获取可用 Token
 
@@ -346,7 +366,15 @@ class TokenManager:
             logger.warning(f"Pool '{pool_name}' not found")
             return None
 
-        token_info = pool.select(exclude=exclude, prefer_tags=prefer_tags)
+        required_tags, exclude_tags = self._merge_tag_filters(
+            required_tags, exclude_tags
+        )
+        token_info = pool.select(
+            exclude=exclude,
+            prefer_tags=prefer_tags,
+            required_tags=required_tags,
+            exclude_tags=exclude_tags,
+        )
         if not token_info:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
@@ -356,7 +384,13 @@ class TokenManager:
             return token[4:]
         return token
 
-    def get_token_info(self, pool_name: str = "ssoBasic", prefer_tags: Optional[Set[str]] = None) -> Optional["TokenInfo"]:
+    def get_token_info(
+        self,
+        pool_name: str = "ssoBasic",
+        prefer_tags: Optional[Set[str]] = None,
+        required_tags: Optional[Set[str]] = None,
+        exclude_tags: Optional[Set[str]] = None,
+    ) -> Optional["TokenInfo"]:
         """
         获取可用 Token 的完整信息
 
@@ -371,7 +405,14 @@ class TokenManager:
             logger.warning(f"Pool '{pool_name}' not found")
             return None
 
-        token_info = pool.select(prefer_tags=prefer_tags)
+        required_tags, exclude_tags = self._merge_tag_filters(
+            required_tags, exclude_tags
+        )
+        token_info = pool.select(
+            prefer_tags=prefer_tags,
+            required_tags=required_tags,
+            exclude_tags=exclude_tags,
+        )
         if not token_info:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None

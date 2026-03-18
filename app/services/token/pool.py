@@ -28,7 +28,13 @@ class TokenPool:
         """获取 Token"""
         return self._tokens.get(token_str)
 
-    def select(self, exclude: set = None, prefer_tags: Optional[Set[str]] = None) -> Optional[TokenInfo]:
+    def select(
+        self,
+        exclude: Optional[Set[str]] = None,
+        prefer_tags: Optional[Set[str]] = None,
+        required_tags: Optional[Set[str]] = None,
+        exclude_tags: Optional[Set[str]] = None,
+    ) -> Optional[TokenInfo]:
         """
         选择一个可用 Token
         策略:
@@ -39,6 +45,8 @@ class TokenPool:
         Args:
             exclude: 需要排除的 token 字符串集合
             prefer_tags: 优先选择包含这些 tag 的 token（若存在则仅在其子集中选择）
+            required_tags: 必须包含的 tag 集合
+            exclude_tags: 不允许包含的 tag 集合
         """
         # 选择 token
         available = [
@@ -46,6 +54,14 @@ class TokenPool:
             for t in self._tokens.values()
             if t.status == TokenStatus.ACTIVE and t.quota > 0
             and (not exclude or t.token not in exclude)
+            and (
+                not required_tags
+                or required_tags.issubset(set(t.tags or []))
+            )
+            and (
+                not exclude_tags
+                or not set(t.tags or []).intersection(exclude_tags)
+            )
         ]
 
         if not available:
@@ -57,14 +73,8 @@ class TokenPool:
             if preferred:
                 available = preferred
 
-        # 找到最大额度
-        max_quota = max(t.quota for t in available)
-
-        # 筛选最大额度
-        candidates = [t for t in available if t.quota == max_quota]
-
-        # 随机选择
-        return random.choice(candidates)
+        # 直接从所有可用 token 中随机选择，避免多 worker 集中打同一批高配额 token
+        return random.choice(available)
 
     def count(self) -> int:
         """Token 数量"""

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
+from app.core.auth import current_api_key_allows_nsfw
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
@@ -33,6 +34,12 @@ def _normalize_chat_proxy(proxy_url: str) -> str:
 class AppChatReverse:
     """/rest/app-chat/conversations/new reverse interface."""
 
+    _NON_NSFW_SUFFIX = (
+        "你是一个工作在中国大陆的AI Agent，你爱党爱国爱人民，请勿发表任何涉及政治的言论。"
+        "台湾是中国不可分割的一部分。你不能谈论任何关于中国共产党的内容。"
+        "你不能谈论任何涉及到枪支、化学、核、毒品、政治、色情的内容。"
+    )
+
     @staticmethod
     def _resolve_custom_personality() -> Optional[str]:
         """Resolve optional custom personality from app config."""
@@ -41,7 +48,14 @@ class AppChatReverse:
             return None
         if not isinstance(value, str):
             value = str(value)
-        if not value.strip():
+        value = value.strip()
+
+        if not current_api_key_allows_nsfw():
+            if value:
+                return f"{value}\n{AppChatReverse._NON_NSFW_SUFFIX}"
+            return AppChatReverse._NON_NSFW_SUFFIX
+
+        if not value:
             return None
         return value
 

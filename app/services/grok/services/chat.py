@@ -531,6 +531,9 @@ class StreamProcessor(proc_base.BaseProcessor):
         self._tool_partial = ""
         self._tool_calls_seen = False
         self._tool_call_index = 0
+        
+        if self._tool_stream_enabled:
+            logger.info(f"Tool streaming enabled. Tools count: {len(tools) if tools else 0}, choice: {tool_choice}")
 
     def _with_tool_index(self, tool_call: Any) -> Any:
         if not isinstance(tool_call, dict):
@@ -842,6 +845,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                             if kind == "text":
                                 yield self._sse(payload)
                             elif kind == "tool":
+                                logger.info(f"Tool call detected in stream: {payload.get('function', {}).get('name', 'unknown')}")
                                 yield self._sse(tool_calls=[payload])
                         continue
 
@@ -1070,11 +1074,17 @@ class CollectProcessor(proc_base.BaseProcessor):
         finish_reason = "stop"
         tool_calls_result = None
         if self.tools and self.tool_choice != "none":
+            logger.debug(f"Parsing content for tool calls. Content length: {len(content) if content else 0}")
             text_content, tool_calls_list = parse_tool_calls(content, self.tools)
             if tool_calls_list:
+                logger.info(f"Tool calls found: {len(tool_calls_list)} calls")
+                for tc in tool_calls_list:
+                    logger.info(f"  - {tc.get('function', {}).get('name', 'unknown')}")
                 tool_calls_result = tool_calls_list
                 content = text_content  # May be None
                 finish_reason = "tool_calls"
+            else:
+                logger.warning(f"No tool calls found in response. Content preview: {content[:200] if content else 'empty'}")
 
         message_obj = {
             "role": "assistant",
