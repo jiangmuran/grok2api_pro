@@ -4,6 +4,7 @@ import random
 from typing import Dict, List, Optional, Iterator, Set
 
 from app.services.token.models import TokenInfo, TokenStatus, TokenPoolStats
+from app.core.config import get_config
 
 
 class TokenPool:
@@ -28,53 +29,89 @@ class TokenPool:
         """获取 Token"""
         return self._tokens.get(token_str)
 
+    def _is_consumed_mode(self) -> bool:
+        """检查是否启用 consumed 模式"""
+        try:
+            return get_config("token.consumed_mode_enabled", False)
+        except Exception:
+            return False
+
     def select(
-        self,
-        exclude: Optional[Set[str]] = None,
-        prefer_tags: Optional[Set[str]] = None,
-        required_tags: Optional[Set[str]] = None,
-        exclude_tags: Optional[Set[str]] = None,
+        self, exclude: set = None, prefer_tags: Optional[Set[str]] = None
     ) -> Optional[TokenInfo]:
         """
         选择一个可用 Token
-        策略:
-        1. 选择 active 状态且有配额的 token
-        2. 优先选择剩余额度最多的
-        3. 如果额度相同，随机选择（避免并发冲突）
+
+        默认模式（consumed_mode_enabled=false）:
+            1. 选择 active 状态且 quota > 0 的 token
+            2. 优先选择剩余额度最多的
+            3. 如果额度相同，随机选择
+
+        Consumed 模式（consumed_mode_enabled=true）:
+            1. 选择 active 状态的 token
+            2. 优先选择消耗次数（consumed）最少的
+            3. 如果 consumed 相同，随机选择
 
         Args:
             exclude: 需要排除的 token 字符串集合
             prefer_tags: 优先选择包含这些 tag 的 token（若存在则仅在其子集中选择）
-            required_tags: 必须包含的 tag 集合
-            exclude_tags: 不允许包含的 tag 集合
         """
-        # 选择 token
-        available = [
-            t
-            for t in self._tokens.values()
-            if t.status == TokenStatus.ACTIVE and t.quota > 0
-            and (not exclude or t.token not in exclude)
-            and (
-                not required_tags
-                or required_tags.issubset(set(t.tags or []))
-            )
-            and (
-                not exclude_tags
-                or not set(t.tags or []).intersection(exclude_tags)
-            )
-        ]
+        consumed_mode = self._is_consumed_mode()
 
-        if not available:
-            return None
+        if consumed_mode:
+            # ===== Consumed 模式（新逻辑）=====
+            available = [
+                t
+                for t in self._tokens.values()
+                if t.is_available(consumed_mode=True)
+                and (not exclude or t.token not in exclude)
+            ]
 
-        # 优先选带指定标签的 token（若存在）
-        if prefer_tags:
-            preferred = [t for t in available if prefer_tags.issubset(set(t.tags or []))]
-            if preferred:
-                available = preferred
+            if not available:
+                return None
 
-        # 直接从所有可用 token 中随机选择，避免多 worker 集中打同一批高配额 token
-        return random.choice(available)
+            # 优先选带指定标签的 token（若存在）
+            if prefer_tags:
+                preferred = [
+                    t for t in available if prefer_tags.issubset(set(t.tags or []))
+                ]
+                if preferred:
+                    available = preferred
+
+            # 找到最小消耗（优先选择消耗少的）
+            min_consumed = min(t.consumed for t in available)
+            candidates = [t for t in available if t.consumed == min_consumed]
+            return random.choice(candidates)
+
+
+        else:
+            # ===== 默认模式（旧逻辑）=====
+            available = [
+                t
+                for t in self._tokens.values()
+                if t.is_available(consumed_mode=False)
+                and (not exclude or t.token not in exclude)
+            ]
+
+            if not available:
+                return None
+
+            # 优先选带指定标签的 token（若存在）
+            if prefer_tags:
+                preferred = [
+                    t for t in available if prefer_tags.issubset(set(t.tags or []))
+                ]
+                if preferred:
+                    available = preferred
+
+            # 找到最大额度
+            max_quota = max(t.quota for t in available)
+
+            # 筛选最大额度
+            candidates = [t for t in available if t.quota == max_quota]
+
+            # 随机选择
+            return random.choice(candidates)
 
     def count(self) -> int:
         """Token 数量"""
@@ -90,6 +127,7 @@ class TokenPool:
 
         for token in self._tokens.values():
             stats.total_quota += token.quota
+            stats.total_consumed += token.consumed
 
             if token.status == TokenStatus.ACTIVE:
                 stats.active += 1
@@ -102,6 +140,7 @@ class TokenPool:
 
         if stats.total > 0:
             stats.avg_quota = stats.total_quota / stats.total
+            stats.avg_consumed = stats.total_consumed / stats.total
 
         return stats
 
