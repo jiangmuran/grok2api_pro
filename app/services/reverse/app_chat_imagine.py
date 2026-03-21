@@ -95,7 +95,7 @@ class AppChatImagineReverse:
                     if not line:
                         continue
                     
-                    logger.debug(f"AppChatImagine: Received line: {line[:100]}...")
+                    logger.info(f"AppChatImagine: Received line: {line[:200]}...")
                     
                     # Skip event type lines
                     if line.startswith("event:"):
@@ -183,11 +183,14 @@ class AppChatImagineReverse:
             logger.info(f"AppChatImagine: Stream completed, generated {image_count} images")
             
             # If we didn't find any images, check the final message buffer
-            if image_count == 0 and message_buffer:
-                logger.warning(
-                    f"AppChatImagine: No images found in response. "
-                    f"Message buffer: {message_buffer[:200]}..."
-                )
+            if image_count == 0:
+                if message_buffer:
+                    logger.warning(
+                        f"AppChatImagine: No images found in response. "
+                        f"Message buffer (first 500 chars): {message_buffer[:500]}"
+                    )
+                else:
+                    logger.warning("AppChatImagine: No message content received from chat API")
                 yield {
                     "type": "error",
                     "error": "No images found in chat response",
