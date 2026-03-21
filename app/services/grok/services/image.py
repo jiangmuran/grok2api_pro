@@ -533,7 +533,7 @@ class ImageGenerationService:
                     raise last_error
                 raise AppException(
                     message="Image generation failed after all retries",
-                    error_type=ErrorType.SERVER_ERROR.value,
+                    error_type=ErrorType.SERVER.value,
                     code="generation_failed",
                     status_code=500,
                 )
@@ -614,7 +614,7 @@ class ImageGenerationService:
                 raise last_error
             raise AppException(
                 message="Image generation failed after all retries",
-                error_type=ErrorType.SERVER_ERROR.value,
+                error_type=ErrorType.SERVER.value,
                 code="generation_failed",
                 status_code=500,
             )
@@ -1139,7 +1139,7 @@ class ImageChatStreamProcessor(ImageWSBaseProcessor):
                 logger.error(f"ImageChatStreamProcessor: Received error: {error_msg}")
                 raise AppException(
                     message=error_msg,
-                    error_type=ErrorType.SERVER_ERROR.value,
+                    error_type=ErrorType.SERVER.value,
                     code=error_code,
                     status_code=502,
                 )
@@ -1249,7 +1249,7 @@ class ImageChatCollectProcessor(ImageWSBaseProcessor):
                 logger.error(f"ImageChatCollectProcessor: Received error: {error_msg}")
                 raise AppException(
                     message=error_msg,
-                    error_type=ErrorType.SERVER_ERROR.value,
+                    error_type=ErrorType.SERVER.value,
                     code=error_code,
                     status_code=502,
                 )
@@ -1279,7 +1279,7 @@ class ImageChatCollectProcessor(ImageWSBaseProcessor):
         if len(results) == 0:
             raise AppException(
                 message="No images generated via chat channel",
-                error_type=ErrorType.SERVER_ERROR.value,
+                error_type=ErrorType.SERVER.value,
                 code="no_images_generated",
                 status_code=502,
             )

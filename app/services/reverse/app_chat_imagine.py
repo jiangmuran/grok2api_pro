@@ -88,7 +88,9 @@ class AppChatImagineReverse:
             
             async for line in stream_response:
                 try:
-                    # Parse SSE line
+                    # Parse SSE line - convert bytes to str if needed
+                    if isinstance(line, bytes):
+                        line = line.decode('utf-8')
                     line = line.strip()
                     if not line:
                         continue
