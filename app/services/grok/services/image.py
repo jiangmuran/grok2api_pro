@@ -23,9 +23,11 @@ from app.services.grok.utils.response import make_response_id, make_chat_chunk, 
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
 from app.services.reverse.ws_imagine import ImagineWebSocketReverse
+from app.services.reverse.app_chat_imagine import AppChatImagineReverse
 
 
 image_service = ImagineWebSocketReverse()
+chat_imagine_service = AppChatImagineReverse()
 
 
 @dataclass
@@ -63,6 +65,39 @@ class ImageGenerationService:
         if not current_api_key_allows_nsfw():
             enable_nsfw = False
         prefer_tags = {"nsfw"} if enable_nsfw else None
+        
+        # Check if we should use chat channel instead of WebSocket
+        use_chat_channel = (
+            model_info.model_id == "grok-imagine-1.0-fast" or
+            get_config("imagine.use_chat_channel", False)
+        )
+        
+        if use_chat_channel:
+            logger.info(
+                f"ImageGeneration: Using CHAT CHANNEL for model {model_info.model_id} - "
+                f"prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, stream={stream}"
+            )
+            return await self._generate_via_chat(
+                token_mgr=token_mgr,
+                token=token,
+                model_info=model_info,
+                prompt=prompt,
+                n=n,
+                response_format=response_format,
+                size=size,
+                aspect_ratio=aspect_ratio,
+                stream=stream,
+                enable_nsfw=enable_nsfw,
+                chat_format=chat_format,
+                tried_tokens=tried_tokens,
+                max_token_retries=max_token_retries,
+                prefer_tags=prefer_tags,
+            )
+        
+        logger.info(
+            f"ImageGeneration: Using WEBSOCKET CHANNEL for model {model_info.model_id} - "
+            f"prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, stream={stream}"
+        )
 
         if stream:
 
@@ -394,6 +429,283 @@ class ImageGenerationService:
         while len(selected) < n:
             selected.append("error")
         return selected
+    
+    async def _generate_via_chat(
+        self,
+        *,
+        token_mgr: Any,
+        token: str,
+        model_info: Any,
+        prompt: str,
+        n: int,
+        response_format: str,
+        size: str,
+        aspect_ratio: str,
+        stream: bool,
+        enable_nsfw: bool,
+        chat_format: bool,
+        tried_tokens: set[str],
+        max_token_retries: int,
+        prefer_tags: Optional[set[str]],
+    ) -> ImageGenerationResult:
+        """Generate images via chat channel (AppChatReverse) instead of WebSocket."""
+        
+        logger.info(
+            f"ImageGeneration[Chat]: Starting generation - "
+            f"model={model_info.model_id}, prompt='{prompt[:80]}...', "
+            f"n={n}, ratio={aspect_ratio}, stream={stream}, nsfw={enable_nsfw}"
+        )
+        
+        last_error: Optional[Exception] = None
+        
+        if stream:
+            async def _stream_retry() -> AsyncGenerator[str, None]:
+                nonlocal last_error
+                for attempt in range(max_token_retries):
+                    preferred = token if (attempt == 0 and not prefer_tags) else None
+                    current_token = await pick_token(
+                        token_mgr,
+                        model_info.model_id,
+                        tried_tokens,
+                        preferred=preferred,
+                        prefer_tags=prefer_tags,
+                    )
+                    if not current_token:
+                        if last_error:
+                            raise last_error
+                        raise AppException(
+                            message="No available tokens. Please try again later.",
+                            error_type=ErrorType.RATE_LIMIT.value,
+                            code="rate_limit_exceeded",
+                            status_code=429,
+                        )
+
+                    tried_tokens.add(current_token)
+                    logger.info(
+                        f"ImageGeneration[Chat]: Attempt {attempt + 1}/{max_token_retries} "
+                        f"with token {current_token[:10]}..."
+                    )
+                    
+                    yielded = False
+                    try:
+                        result = await self._stream_chat(
+                            token_mgr=token_mgr,
+                            token=current_token,
+                            model_info=model_info,
+                            prompt=prompt,
+                            n=n,
+                            response_format=response_format,
+                            size=size,
+                            aspect_ratio=aspect_ratio,
+                            enable_nsfw=enable_nsfw,
+                            chat_format=chat_format,
+                        )
+                        async for chunk in result.data:
+                            yielded = True
+                            yield chunk
+                        logger.info(f"ImageGeneration[Chat]: Stream completed successfully")
+                        return
+                    except UpstreamException as e:
+                        last_error = e
+                        if rate_limited(e):
+                            if yielded:
+                                raise
+                            await token_mgr.mark_rate_limited(current_token)
+                            logger.warning(
+                                f"ImageGeneration[Chat]: Token {current_token[:10]}... rate limited (429), "
+                                f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                            )
+                            continue
+                        logger.error(
+                            f"ImageGeneration[Chat]: Generation failed with upstream error: {e}",
+                            exc_info=True
+                        )
+                        raise
+                    except Exception as e:
+                        logger.error(
+                            f"ImageGeneration[Chat]: Unexpected error during generation: {e}",
+                            exc_info=True
+                        )
+                        last_error = e
+                        raise
+
+                if last_error:
+                    raise last_error
+                raise AppException(
+                    message="Image generation failed after all retries",
+                    error_type=ErrorType.SERVER_ERROR.value,
+                    code="generation_failed",
+                    status_code=500,
+                )
+
+            stream_with_usage = wrap_stream_with_usage(
+                _stream_retry(),
+                token_mgr,
+                token,
+                model_info.model_id,
+            )
+            return ImageGenerationResult(stream=True, data=stream_with_usage)
+        
+        else:
+            # Non-streaming: collect mode
+            for attempt in range(max_token_retries):
+                preferred = token if (attempt == 0 and not prefer_tags) else None
+                current_token = await pick_token(
+                    token_mgr,
+                    model_info.model_id,
+                    tried_tokens,
+                    preferred=preferred,
+                    prefer_tags=prefer_tags,
+                )
+                if not current_token:
+                    if last_error:
+                        raise last_error
+                    raise AppException(
+                        message="No available tokens. Please try again later.",
+                        error_type=ErrorType.RATE_LIMIT.value,
+                        code="rate_limit_exceeded",
+                        status_code=429,
+                    )
+
+                tried_tokens.add(current_token)
+                logger.info(
+                    f"ImageGeneration[Chat]: Collect attempt {attempt + 1}/{max_token_retries} "
+                    f"with token {current_token[:10]}..."
+                )
+
+                try:
+                    result = await self._collect_chat(
+                        token_mgr=token_mgr,
+                        token=current_token,
+                        model_info=model_info,
+                        prompt=prompt,
+                        n=n,
+                        response_format=response_format,
+                        aspect_ratio=aspect_ratio,
+                        enable_nsfw=enable_nsfw,
+                    )
+                    logger.info(
+                        f"ImageGeneration[Chat]: Collected {len(result.data)} images successfully"
+                    )
+                    return result
+                except UpstreamException as e:
+                    last_error = e
+                    if rate_limited(e):
+                        await token_mgr.mark_rate_limited(current_token)
+                        logger.warning(
+                            f"ImageGeneration[Chat]: Token {current_token[:10]}... rate limited (429), "
+                            f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                        continue
+                    logger.error(
+                        f"ImageGeneration[Chat]: Collection failed with upstream error: {e}",
+                        exc_info=True
+                    )
+                    raise
+                except Exception as e:
+                    logger.error(
+                        f"ImageGeneration[Chat]: Unexpected error during collection: {e}",
+                        exc_info=True
+                    )
+                    last_error = e
+                    raise
+
+            if last_error:
+                raise last_error
+            raise AppException(
+                message="Image generation failed after all retries",
+                error_type=ErrorType.SERVER_ERROR.value,
+                code="generation_failed",
+                status_code=500,
+            )
+    
+    async def _stream_chat(
+        self,
+        *,
+        token_mgr: Any,
+        token: str,
+        model_info: Any,
+        prompt: str,
+        n: int,
+        response_format: str,
+        size: str,
+        aspect_ratio: str,
+        enable_nsfw: bool,
+        chat_format: bool,
+    ) -> ImageGenerationResult:
+        """Stream image generation via chat channel."""
+        
+        logger.debug(
+            f"ImageGeneration[Chat/Stream]: Calling AppChatImagineReverse - "
+            f"token={token[:10]}..., prompt='{prompt[:50]}...'"
+        )
+        
+        upstream = chat_imagine_service.generate(
+            token=token,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            n=n,
+            enable_nsfw=enable_nsfw,
+            stream=True,
+        )
+        
+        processor = ImageChatStreamProcessor(
+            model_info.model_id,
+            token,
+            n=n,
+            response_format=response_format,
+            size=size,
+            chat_format=chat_format,
+        )
+        
+        stream = wrap_stream_with_usage(
+            processor.process(upstream),
+            token_mgr,
+            token,
+            model_info.model_id,
+        )
+        
+        return ImageGenerationResult(stream=True, data=stream)
+    
+    async def _collect_chat(
+        self,
+        *,
+        token_mgr: Any,
+        token: str,
+        model_info: Any,
+        prompt: str,
+        n: int,
+        response_format: str,
+        aspect_ratio: str,
+        enable_nsfw: bool,
+    ) -> ImageGenerationResult:
+        """Collect image generation via chat channel (non-streaming)."""
+        
+        logger.debug(
+            f"ImageGeneration[Chat/Collect]: Calling AppChatImagineReverse - "
+            f"token={token[:10]}..., prompt='{prompt[:50]}...', n={n}"
+        )
+        
+        upstream = chat_imagine_service.generate(
+            token=token,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            n=n,
+            enable_nsfw=enable_nsfw,
+            stream=False,
+        )
+        
+        processor = ImageChatCollectProcessor(
+            model_info.model_id,
+            token,
+            n=n,
+            response_format=response_format,
+        )
+        
+        results = await processor.process(upstream)
+        logger.info(f"ImageGeneration[Chat/Collect]: Collected {len(results)} images")
+        
+        return ImageGenerationResult(stream=False, data=results)
 
 
 class ImageWSBaseProcessor(BaseProcessor):
@@ -792,6 +1104,217 @@ class ImageWSCollectProcessor(ImageWSBaseProcessor):
                 results.append(output)
 
         return results
+
+
+class ImageChatStreamProcessor(ImageWSBaseProcessor):
+    """Chat channel image stream processor."""
+    
+    def __init__(
+        self,
+        model: str,
+        token: str = "",
+        n: int = 1,
+        response_format: str = "b64_json",
+        size: str = "1024x1024",
+        chat_format: bool = False,
+    ):
+        super().__init__(model, token, response_format)
+        self.n = n
+        self.size = size
+        self.chat_format = chat_format
+        self.seen_urls: set[str] = set()
+        self.image_count = 0
+    
+    async def process(self, upstream: AsyncGenerator[Dict[str, Any], None]) -> AsyncGenerator[str, None]:
+        """Process chat channel image generation stream."""
+        
+        logger.debug(f"ImageChatStreamProcessor: Starting to process chat stream")
+        
+        async for event in upstream:
+            event_type = event.get("type")
+            
+            if event_type == "error":
+                error_msg = event.get("error", "Unknown error")
+                error_code = event.get("error_code", "unknown_error")
+                logger.error(f"ImageChatStreamProcessor: Received error: {error_msg}")
+                raise AppException(
+                    message=error_msg,
+                    error_type=ErrorType.SERVER_ERROR.value,
+                    code=error_code,
+                    status_code=502,
+                )
+            
+            elif event_type == "image":
+                url = event.get("url")
+                index = event.get("index", self.image_count)
+                
+                if url and url not in self.seen_urls:
+                    self.seen_urls.add(url)
+                    logger.info(f"ImageChatStreamProcessor: Processing image #{index + 1}: {url}")
+                    
+                    # Download and convert image
+                    try:
+                        output = await self._process_image_url(url, index)
+                        if output:
+                            if self.chat_format:
+                                # Chat format: emit as SSE
+                                chunk = make_chat_chunk(self.model, wrap_image_content(output))
+                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                            else:
+                                # Image format: emit progress event
+                                yield f"event: image_generation.partial_image\n"
+                                yield f"data: {orjson.dumps({'index': index, self.response_format: output}).decode()}\n\n"
+                            
+                            self.image_count += 1
+                            
+                            if self.image_count >= self.n:
+                                logger.info(f"ImageChatStreamProcessor: Reached target count {self.n}, stopping")
+                                break
+                    except Exception as e:
+                        logger.warning(f"ImageChatStreamProcessor: Failed to process image URL {url}: {e}")
+                        continue
+            
+            elif event_type == "progress":
+                # Optionally emit progress messages
+                message = event.get("message", "")
+                if message:
+                    logger.debug(f"ImageChatStreamProcessor: Progress: {message[:100]}...")
+        
+        if self.chat_format:
+            # Emit done marker for chat format
+            done_chunk = make_chat_chunk(self.model, "", finish_reason="stop")
+            yield f"data: {orjson.dumps(done_chunk).decode()}\n\n"
+            yield "data: [DONE]\n\n"
+        else:
+            # Emit completed event for image format
+            yield f"event: image_generation.completed\n"
+            yield f"data: {orjson.dumps({'count': self.image_count}).decode()}\n\n"
+        
+        logger.info(f"ImageChatStreamProcessor: Stream completed, processed {self.image_count} images")
+    
+    async def _process_image_url(self, url: str, index: int) -> Optional[str]:
+        """Download and convert image URL to requested format."""
+        
+        try:
+            import httpx
+            
+            logger.debug(f"ImageChatStreamProcessor: Downloading image from {url}")
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                image_data = response.content
+            
+            if self.response_format == "url":
+                return url
+            elif self.response_format in ("b64_json", "base64"):
+                import base64
+                b64_data = base64.b64encode(image_data).decode("utf-8")
+                return b64_data
+            else:
+                return url
+        
+        except Exception as e:
+            logger.error(f"ImageChatStreamProcessor: Failed to download/convert image: {e}")
+            return None
+
+
+class ImageChatCollectProcessor(ImageWSBaseProcessor):
+    """Chat channel image collect processor (non-streaming)."""
+    
+    def __init__(
+        self,
+        model: str,
+        token: str = "",
+        n: int = 1,
+        response_format: str = "b64_json",
+    ):
+        super().__init__(model, token, response_format)
+        self.n = n
+    
+    async def process(self, upstream: AsyncGenerator[Dict[str, Any], None]) -> List[str]:
+        """Process chat channel image generation (collect mode)."""
+        
+        logger.debug(f"ImageChatCollectProcessor: Starting to collect images (n={self.n})")
+        
+        results: List[str] = []
+        seen_urls: set[str] = set()
+        
+        async for event in upstream:
+            event_type = event.get("type")
+            
+            if event_type == "error":
+                error_msg = event.get("error", "Unknown error")
+                error_code = event.get("error_code", "unknown_error")
+                logger.error(f"ImageChatCollectProcessor: Received error: {error_msg}")
+                raise AppException(
+                    message=error_msg,
+                    error_type=ErrorType.SERVER_ERROR.value,
+                    code=error_code,
+                    status_code=502,
+                )
+            
+            elif event_type == "image":
+                url = event.get("url")
+                
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    logger.info(f"ImageChatCollectProcessor: Processing image #{len(results) + 1}: {url}")
+                    
+                    # Download and convert image
+                    try:
+                        output = await self._process_image_url(url)
+                        if output:
+                            results.append(output)
+                            
+                            if len(results) >= self.n:
+                                logger.info(f"ImageChatCollectProcessor: Reached target count {self.n}, stopping")
+                                break
+                    except Exception as e:
+                        logger.warning(f"ImageChatCollectProcessor: Failed to process image URL {url}: {e}")
+                        continue
+        
+        logger.info(f"ImageChatCollectProcessor: Collected {len(results)} images")
+        
+        if len(results) == 0:
+            raise AppException(
+                message="No images generated via chat channel",
+                error_type=ErrorType.SERVER_ERROR.value,
+                code="no_images_generated",
+                status_code=502,
+            )
+        
+        # Pad with "error" if needed
+        while len(results) < self.n:
+            results.append("error")
+        
+        return results[:self.n]
+    
+    async def _process_image_url(self, url: str) -> Optional[str]:
+        """Download and convert image URL to requested format."""
+        
+        try:
+            import httpx
+            
+            logger.debug(f"ImageChatCollectProcessor: Downloading image from {url}")
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                image_data = response.content
+            
+            if self.response_format == "url":
+                return url
+            elif self.response_format in ("b64_json", "base64"):
+                import base64
+                b64_data = base64.b64encode(image_data).decode("utf-8")
+                return b64_data
+            else:
+                return url
+        
+        except Exception as e:
+            logger.error(f"ImageChatCollectProcessor: Failed to download/convert image: {e}")
+            return None
 
 
 __all__ = ["ImageGenerationService"]
